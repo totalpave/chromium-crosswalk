@@ -49,6 +49,8 @@ allowed_hosts = [
 deps = {
   'src/breakpad/src':
     (Var("chromium_git")) + '/breakpad/breakpad/src.git@7c70f47255713629c8053826008bd00f98d71ced',
+  'src/build':
+    (Var("chromium_git")) + '/chromium/src/build.git@eebd1a7d36ebdb0d679f995c37e4990ff8f9f4a3',
   'src/buildtools':
     (Var("chromium_git")) + '/chromium/src/buildtools.git@a9db5def7f29536b4913603528ea50d862ab4386',
   'src/chrome/test/data/perf/canvas_bench':
