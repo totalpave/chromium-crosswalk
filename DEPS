@@ -6,7 +6,7 @@ vars = {
   'buildspec_platforms':
     'all',
   'buildtools_revision':
-    '454e53abae6e4d68ee992b0a93a4174b75519393',
+    'd658e92a1fc22ead23dede3913117fdee514ab64',
   'catapult_revision':
     'fd47e24b0e0912f153cd68a5dfc995d6f7cd2b81',
   'chromium_git':
@@ -50,7 +50,7 @@ deps = {
   'src/breakpad/src':
     (Var("chromium_git")) + '/breakpad/breakpad/src.git@7c70f47255713629c8053826008bd00f98d71ced',
   'src/buildtools':
-    (Var("chromium_git")) + '/chromium/buildtools.git@454e53abae6e4d68ee992b0a93a4174b75519393',
+    (Var("chromium_git")) + '/chromium/src/buildtools.git@d658e92a1fc22ead23dede3913117fdee514ab64',
   'src/chrome/test/data/perf/canvas_bench':
     (Var("chromium_git")) + '/chromium/canvas_bench.git@a7b40ea5ae0239517d78845a5fc9b12976bfc732',
   'src/chrome/test/data/perf/frame_rate/content':
